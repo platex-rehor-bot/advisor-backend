@@ -156,13 +156,13 @@ def build_endpoint_url(ep):
 ResolvedEndpoint = namedtuple('ResolvedEndpoint', ['url', 'ca_certificate', 'authenticated', 'source'])
 
 
-def _resolve_v2_endpoint(app_key, deployment_key, v1_endpoints, fallback_url=None):
-    """Resolve a dependency endpoint: V2 → V1 → fallback.
+def _resolve_v2_endpoint(app_key, deployment_key, fallback_url=None):
+    """Resolve a dependency endpoint using V2 Clowder API.
 
     Returns a ResolvedEndpoint with URL, CA certificate path, authenticated
-    flag, and resolution source ('v2', 'v1', or 'fallback').  CA and auth
-    are kept consistent with the source per Clowder V2 migration rules:
-    V2 source → V2 CA/auth, V1 source → V1 CA, fallback → system trust.
+    flag, and resolution source ('v2' or 'fallback').  V2 is deployed on
+    all clusters; a missing V2 endpoint is a misconfiguration that is
+    logged as a warning rather than silently degrading to V1.
     """
     v2_ep = get_v2_dependency_endpoint(app_key, deployment_key)
     if v2_ep and v2_ep.uri:
@@ -172,14 +172,11 @@ def _resolve_v2_endpoint(app_key, deployment_key, v1_endpoints, fallback_url=Non
             authenticated=getattr(v2_ep, 'authenticated', False),
             source='v2',
         )
-    v1_ep = v1_endpoints.get(app_key)
-    if v1_ep:
-        return ResolvedEndpoint(
-            url=build_endpoint_url(v1_ep),
-            ca_certificate=LoadedConfig.tlsCAPath or None,
-            authenticated=False,
-            source='v1',
-        )
+    import logging
+    logging.getLogger(__name__).warning(
+        "V2 dependency endpoint not found for %s/%s; using fallback URL",
+        app_key, deployment_key,
+    )
     return ResolvedEndpoint(
         url=fallback_url,
         ca_certificate=None,
@@ -194,8 +191,8 @@ if os.getenv("CLOWDER_ENABLED", "").lower() == "true":
     inv_host = endpoints['host-inventory']
     INVENTORY_SERVER_URL = f"{build_endpoint_url(inv_host)}/api/inventory/v1"
 
-    # RBAC: prefer V2 endpoint, fall back to V1 then env var
-    _rbac_ep = _resolve_v2_endpoint('rbac', 'service', endpoints, fallback_url=os.getenv('RBAC_URL'))
+    # RBAC: V2 endpoint (V2 deployed on all clusters; env var fallback for safety)
+    _rbac_ep = _resolve_v2_endpoint('rbac', 'service', fallback_url=os.getenv('RBAC_URL'))
     RBAC_URL = _rbac_ep.url
     RBAC_CA_CERT = _rbac_ep.ca_certificate
     RBAC_AUTHENTICATED = _rbac_ep.authenticated
@@ -206,8 +203,8 @@ if os.getenv("CLOWDER_ENABLED", "").lower() == "true":
     else:
         PLAYBOOK_DISPATCHER_URL = "http://localhost"
 
-    # Sources: prefer V2 endpoint, fall back to V1 then localhost
-    _sources_ep = _resolve_v2_endpoint('sources-api', 'svc', endpoints, fallback_url="http://localhost")
+    # Sources: V2 endpoint (V2 deployed on all clusters; localhost fallback for safety)
+    _sources_ep = _resolve_v2_endpoint('sources-api', 'svc', fallback_url="http://localhost")
     SOURCES_API_URL = _sources_ep.url
     SOURCES_CA_CERT = _sources_ep.ca_certificate
     SOURCES_AUTHENTICATED = _sources_ep.authenticated
